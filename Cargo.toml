@@ -5,6 +5,8 @@ members = [
     "database",
     "auth",
     "ui-components",
+    "canvas-bevy",
+    "annotation-tools",
 ]
 
 [workspace.dependencies]
@@ -29,3 +31,6 @@ thiserror = "1"
 
 # Dioxus 0.7 RC
 dioxus = { version = "0.7.0-rc.0", features = ["router"] }
+
+# Bevy 0.16
+bevy = { version = "0.16", default-features = false, features = ["bevy_render", "bevy_core_pipeline"] }
