@@ -1,0 +1,33 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Lambda builds
+.aws-sam/
+samconfig.toml
+
+# Node (Tailwind)
+node_modules/
+package-lock.json
+*.log
+
+# Dioxus
+dist/
+public/output.css
+
+# Environment
+.env
+.env.local
+
+# OS
+Thumbs.db

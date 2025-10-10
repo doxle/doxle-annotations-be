@@ -1,0 +1,18 @@
+[package]
+name = "ui-components"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Internal crates
+doxle-core = { path = "../core" }
+
+# Workspace dependencies
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Dioxus
+dioxus = { workspace = true }
