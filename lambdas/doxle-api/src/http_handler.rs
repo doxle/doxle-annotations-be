@@ -57,21 +57,33 @@ pub(crate) async fn function_handler(event: Request) -> Result<Response<Body>, E
         let dynamo_client = DynamoClient::new(&config);
         let table_name = env::var("TABLE_NAME").unwrap_or_else(|_| "doxle".to_string());
 
-        // Get user ID from JWT (API Gateway authorizer passes this)
+        // Get user ID from JWT claims (HTTP API passes JWT claims in request context)
+        // For HTTP APIs with JWT authorizer, claims are in requestContext.authorizer.jwt.claims
         let user_id = event
-            .query_string_parameters_ref()
-            .and_then(|params| params.first("user_id"))
-            .unwrap_or("test-user-123");
+            .request_context()
+            .authorizer()
+            .and_then(|auth| {
+                tracing::info!("Authorizer context: {:?}", auth);
+                auth.jwt.as_ref()
+            })
+            .and_then(|jwt| jwt.claims.get("sub"))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                tracing::warn!("Could not extract user ID from JWT, using fallback");
+                "test-user-123".to_string()
+            });
+        
+        tracing::info!("User ID from JWT: {}", user_id);
 
         return match (method, path) {
             (&Method::POST, "/users") => {
-                users::create_user(&dynamo_client, &table_name, user_id, body).await
+                users::create_user(&dynamo_client, &table_name, &user_id, body).await
             }
             (&Method::GET, "/users/me") => {
-                users::get_user(&dynamo_client, &table_name, user_id).await
+                users::get_user(&dynamo_client, &table_name, &user_id).await
             }
             (&Method::PATCH, "/users/me") => {
-                users::update_user(&dynamo_client, &table_name, user_id, body).await
+                users::update_user(&dynamo_client, &table_name, &user_id, body).await
             }
             _ => {
                 let resp = Response::builder()
