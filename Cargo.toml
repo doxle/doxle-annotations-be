@@ -5,6 +5,7 @@ members = [
     "crates/database",
     "crates/auth",
     "lambdas/doxle-user",
+    "lambdas/doxle-auth",
 ]
 
 [workspace.dependencies]
