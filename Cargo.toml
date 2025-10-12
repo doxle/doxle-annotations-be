@@ -1,12 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "core",
-    "database",
-    "auth",
-    "ui-components",
-    "canvas-bevy",
-    "annotation-tools",
+    "crates/core",
+    "crates/database",
+    "crates/auth",
+    "lambdas/doxle-user",
 ]
 
 [workspace.dependencies]
