@@ -1,30 +1,16 @@
-[workspace]
-members = [
-    "shared",
-    "lambdas/api-lambda",
-    "lambdas/stream-lambda",
-]
-resolver = "2"
+[package]
+name = "doxle-annotations-api"
+version = "0.1.0"
+edition = "2021"
 
-[workspace.dependencies]
-# AWS SDK
+[dependencies]
+lambda_http = "0.13.0"
 aws-config = { version = "1.8", features = ["behavior-version-latest"] }
 aws-sdk-cognitoidentityprovider = "1.100"
 aws-sdk-dynamodb = "1.96"
 aws-sdk-apigatewaymanagement = "1.87"
-aws-sdk-s3 = "1.108"
-aws-sdk-sesv2 = "1.101"
-
-# Lambda runtime
-lambda_http = "0.13.0"
-lambda_runtime = "0.13.0"
-aws_lambda_events = "0.15.0"
-
-# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Utilities
 base64 = "0.22"
 hmac = "0.12"
 sha2 = "0.10"
@@ -32,5 +18,4 @@ tracing = "0.1"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 
-# Async runtime
 tokio = { version = "1", features = ["macros"] }

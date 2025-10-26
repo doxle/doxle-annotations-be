@@ -1,0 +1,23 @@
+[package]
+name = "doxle-stream-lambda"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "bootstrap"
+path = "src/main.rs"
+
+[dependencies]
+doxle-shared = { path = "../../shared" }
+
+aws-config = { workspace = true }
+aws-sdk-apigatewaymanagement = { workspace = true }
+aws-sdk-dynamodb = { workspace = true }
+aws_lambda_events = { workspace = true }
+
+lambda_runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { workspace = true }
