@@ -29,5 +29,9 @@ public/output.css
 .env
 .env.local
 
+# CloudFront keys (sensitive!)
+keys/
+*.pem
+
 # OS
 Thumbs.db

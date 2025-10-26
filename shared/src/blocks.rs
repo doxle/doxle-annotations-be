@@ -208,22 +208,141 @@ pub async fn update_block(
     get_block(client, table_name, block_id).await
 }
 
-/// Delete a block
+/// Delete a block and associated records (images, annotations, links)
 pub async fn delete_block(
     client: &DynamoClient,
     table_name: &str,
     block_id: &str,
 ) -> Result<Response<Body>, Error> {
-    let pk = format!("BLOCK#{}", block_id);
-    
-    client
-        .delete_item()
+    use std::collections::HashMap;
+
+    let block_pk = format!("BLOCK#{}", block_id);
+
+    // 1) Fetch BLOCK# -> BLOCK# record to get project_id (stored as PK string e.g. "PROJECT#<pid>")
+    let block_item = client
+        .get_item()
         .table_name(table_name)
-        .key("PK", aws_sdk_dynamodb::types::AttributeValue::S(pk.clone()))
-        .key("SK", aws_sdk_dynamodb::types::AttributeValue::S(pk))
+        .key("PK", aws_sdk_dynamodb::types::AttributeValue::S(block_pk.clone()))
+        .key("SK", aws_sdk_dynamodb::types::AttributeValue::S(block_pk.clone()))
         .send()
         .await?;
-    
+
+    let project_pk = block_item
+        .item()
+        .and_then(|it| it.get("project_id"))
+        .and_then(|v| v.as_s().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+
+    // Collect all keys to delete
+    let mut delete_keys: Vec<HashMap<String, aws_sdk_dynamodb::types::AttributeValue>> = Vec::new();
+
+    // 2) Query images under the block (PK=BLOCK#bid, SK begins_with IMAGE#)
+    let images_result = client
+        .query()
+        .table_name(table_name)
+        .key_condition_expression("PK = :pk AND begins_with(SK, :sk_prefix)")
+        .expression_attribute_values(":pk", aws_sdk_dynamodb::types::AttributeValue::S(block_pk.clone()))
+        .expression_attribute_values(":sk_prefix", aws_sdk_dynamodb::types::AttributeValue::S("IMAGE#".to_string()))
+        .send()
+        .await?;
+
+    let mut image_ids: Vec<String> = Vec::new();
+    for item in images_result.items() {
+        if let Some(sk) = item.get("SK").and_then(|v| v.as_s().ok()) {
+            if let Some(image_id) = sk.strip_prefix("IMAGE#") {
+                image_ids.push(image_id.to_string());
+                // Add BLOCK# -> IMAGE# record to delete
+                let mut key = HashMap::new();
+                key.insert("PK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(block_pk.clone()));
+                key.insert("SK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(sk.to_string()));
+                delete_keys.push(key);
+            }
+        }
+    }
+
+    // 3) For each image, delete annotations and IMAGE self record
+    for image_id in &image_ids {
+        let image_pk = format!("IMAGE#{}", image_id);
+
+        // Annotations under image
+        let annotations_result = client
+            .query()
+            .table_name(table_name)
+            .key_condition_expression("PK = :pk AND begins_with(SK, :sk_prefix)")
+            .expression_attribute_values(":pk", aws_sdk_dynamodb::types::AttributeValue::S(image_pk.clone()))
+            .expression_attribute_values(":sk_prefix", aws_sdk_dynamodb::types::AttributeValue::S("ANNOTATION#".to_string()))
+            .send()
+            .await?;
+
+        for item in annotations_result.items() {
+            if let Some(sk) = item.get("SK").and_then(|v| v.as_s().ok()) {
+                let mut key = HashMap::new();
+                key.insert("PK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(image_pk.clone()));
+                key.insert("SK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(sk.to_string()));
+                delete_keys.push(key);
+            }
+        }
+
+        // IMAGE# -> IMAGE# self record
+        let mut key = HashMap::new();
+        key.insert("PK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(image_pk.clone()));
+        key.insert("SK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(image_pk));
+        delete_keys.push(key);
+    }
+
+    // 4) Add PROJECT# -> BLOCK# link record (if project_pk present) and BLOCK self record
+    if !project_pk.is_empty() {
+        let mut key = HashMap::new();
+        key.insert("PK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(project_pk.clone()));
+        key.insert("SK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(block_pk.clone()));
+        delete_keys.push(key);
+    }
+
+    let mut key = HashMap::new();
+    key.insert("PK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(block_pk.clone()));
+    key.insert("SK".to_string(), aws_sdk_dynamodb::types::AttributeValue::S(block_pk));
+    delete_keys.push(key);
+
+    // 5) Batch delete with retries (25 items per request)
+    for chunk in delete_keys.chunks(25) {
+        let write_reqs: Vec<_> = chunk
+            .iter()
+            .map(|k| {
+                aws_sdk_dynamodb::types::WriteRequest::builder()
+                    .delete_request(
+                        aws_sdk_dynamodb::types::DeleteRequest::builder()
+                            .set_key(Some(k.clone()))
+                            .build()
+                            .unwrap(),
+                    )
+                    .build()
+            })
+            .collect();
+
+        let mut unprocessed = Some(write_reqs);
+        let mut attempts = 0;
+        while let Some(reqs) = unprocessed {
+            attempts += 1;
+            let result = client
+                .batch_write_item()
+                .request_items(table_name, reqs)
+                .send()
+                .await?;
+
+            unprocessed = result
+                .unprocessed_items()
+                .and_then(|m| m.get(table_name))
+                .map(|v| v.clone());
+
+            if unprocessed.is_some() && attempts < 5 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100 * attempts)).await;
+            } else {
+                break;
+            }
+        }
+    }
+
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .header("Access-Control-Allow-Origin", "*")

@@ -31,6 +31,7 @@ sha2 = "0.10"
 tracing = "0.1"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
+rsa = { version = "0.9", features = ["sha2"] }
 
 # Async runtime
 tokio = { version = "1", features = ["macros"] }

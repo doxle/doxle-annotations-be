@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFront distribution for doxle-annotations S3 bucket with Origin Access Control'
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Default: doxle-annotations
+    Description: Name of the S3 bucket containing images
+  
+  TrustedKeyGroupPublicKey:
+    Type: String
+    Description: Public key for CloudFront signed cookies (PEM format without headers)
+    NoEcho: true
+
+Resources:
+  # CloudFront Origin Access Control
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-OAC
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront Public Key
+  CloudFrontPublicKey:
+    Type: AWS::CloudFront::PublicKey
+    Properties:
+      PublicKeyConfig:
+        CallerReference: !Sub ${AWS::StackName}-key-${AWS::AccountId}
+        Name: !Sub ${AWS::StackName}-public-key
+        EncodedKey: !Ref TrustedKeyGroupPublicKey
+        Comment: Public key for signed cookies
+
+  # CloudFront Key Group
+  CloudFrontKeyGroup:
+    Type: AWS::CloudFront::KeyGroup
+    Properties:
+      KeyGroupConfig:
+        Name: !Sub ${AWS::StackName}-key-group
+        Items:
+          - !Ref CloudFrontPublicKey
+        Comment: Key group for signed cookies
+
+  # CloudFront Distribution
+  # Custom Cache Policy with immutable cache-control
+  CustomCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub ${AWS::StackName}-immutable-cache
+        Comment: Long TTL with immutable cache for images
+        DefaultTTL: 31536000  # 1 year
+        MaxTTL: 31536000
+        MinTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          QueryStringsConfig:
+            QueryStringBehavior: none
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers:
+              - Accept
+              - Range  # Enable Range requests for partial content
+          CookiesConfig:
+            CookieBehavior: none
+
+  # Origin Shield (optional - adds cost but improves cache hit ratio)
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub ${AWS::StackName} - Image delivery with signed cookies, HTTP/3, Origin Shield
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true  # Gzip/Brotli compression
+          CachePolicyId: !Ref CustomCachePolicy
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf  # CORS-S3Origin
+          TrustedKeyGroups:
+            - !Ref CloudFrontKeyGroup
+          ResponseHeadersPolicyId: !Ref CustomResponseHeadersPolicy
+        Origins:
+          - Id: S3Origin
+            DomainName: !Sub ${S3BucketName}.s3.${AWS::Region}.amazonaws.com
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            OriginShield:
+              Enabled: true
+              OriginShieldRegion: !Ref AWS::Region
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        PriceClass: PriceClass_100  # Use only North America and Europe edge locations
+        HttpVersion: http2and3  # HTTP/2 and HTTP/3 (QUIC)
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+  # Custom Response Headers Policy
+  CustomResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub ${AWS::StackName}-headers
+        Comment: Immutable cache headers for images
+        CustomHeadersConfig:
+          Items:
+            - Header: Cache-Control
+              Value: public, max-age=31536000, immutable
+              Override: true
+            - Header: Accept-Ranges
+              Value: bytes
+              Override: false
+
+  # S3 Bucket Policy to allow CloudFront OAC
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3BucketName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${S3BucketName}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+Outputs:
+  CloudFrontDomainName:
+    Description: CloudFront distribution domain name
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub ${AWS::StackName}-DomainName
+  
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID
+    Value: !Ref CloudFrontDistribution
+    Export:
+      Name: !Sub ${AWS::StackName}-DistributionId
+  
+  CloudFrontKeyGroupId:
+    Description: Key group ID for signing cookies
+    Value: !Ref CloudFrontKeyGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-KeyGroupId
+  
+  PublicKeyId:
+    Description: Public key ID for signing
+    Value: !Ref CloudFrontPublicKey
+    Export:
+      Name: !Sub ${AWS::StackName}-PublicKeyId

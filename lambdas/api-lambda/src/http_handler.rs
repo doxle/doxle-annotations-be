@@ -2,7 +2,7 @@ use lambda_http::{Body, Error, Request, RequestExt, Response, http::{Method, Sta
 use serde::Deserialize;
 use std::env;
 use std::sync::Arc;
-use doxle_shared::{auth, users, projects, blocks, images, annotations, classes, s3_multipart, invites, AppState};
+use doxle_shared::{auth, users, projects, blocks, images, annotations, classes, s3_multipart, invites, cloudfront, AppState};
 use aws_sdk_dynamodb::{Client as DynamoClient, types::AttributeValue};
 use aws_sdk_s3::Client as S3Client;
 
@@ -84,6 +84,38 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
                 Ok(resp)
             }
         };
+    }
+
+    // CloudFront signed cookies endpoint (requires JWT auth)
+    if path == "/auth/cloudfront-cookies" {
+        if method != &Method::POST {
+            return Ok(Response::builder()
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .header("Content-Type", "application/json")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(serde_json::json!({"error": "Method not allowed"}).to_string().into())
+                .map_err(Box::new)?);
+        }
+
+        // Extract user ID from JWT
+        let user_id = event
+            .headers()
+            .get("X-User-Id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                event
+                    .request_context()
+                    .authorizer()
+                    .and_then(|auth| auth.jwt.as_ref())
+                    .and_then(|jwt| jwt.claims.get("sub"))
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "anonymous".to_string());
+
+        // Issue CloudFront signed cookies (valid for 12 hours)
+        let origin_header = event.headers().get("Origin").and_then(|v| v.to_str().ok());
+        return cloudfront::issue_signed_cookies_response(&user_id, 43200, origin_header);
     }
 
     // Invites routes (public GET, authenticated POST)
@@ -372,7 +404,7 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
     not_found()
 }
 
-// Helper: parse bucket and key from an S3 URL like https://bucket.s3.amazonaws.com/key
+// Helper: parse bucket and key from an S3 URL like https://bucket.s3.amazonaws.com/key or https://s3.<region>.amazonaws.com/bucket/key
 fn parse_bucket_and_key(url: &str) -> Option<(String, String)> {
     let no_scheme = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
     let (host, path) = no_scheme.split_once('/')?;
@@ -409,22 +441,13 @@ async fn list_block_images_signed(
                     .map(|s| s.to_string())
                     .unwrap_or_default();
 
-                // Default to stored URL; replace with presigned if we can parse
+                // Prefer CloudFront URL if configured, else fallback to stored URL
                 let mut final_url = url_str.clone();
-
-                if let Some((bucket, key)) = parse_bucket_and_key(&url_str) {
-                    if let Ok(presigned) = s3
-                        .get_object()
-                        .bucket(bucket)
-                        .key(&key)
-                        .presigned(
-                            aws_sdk_s3::presigning::PresigningConfig::expires_in(
-                                std::time::Duration::from_secs(300)
-                            )?
-                        )
-                        .await
-                    {
-                        final_url = presigned.uri().to_string();
+                if let Ok(cf_domain) = std::env::var("CLOUDFRONT_DOMAIN") {
+                    if !cf_domain.trim().is_empty() {
+                        if let Some((_bucket, key)) = parse_bucket_and_key(&url_str) {
+                            final_url = format!("https://{}/{}", cf_domain.trim_matches('/'), key);
+                        }
                     }
                 }
 
