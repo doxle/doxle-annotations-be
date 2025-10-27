@@ -231,12 +231,14 @@ pub async fn abort_multipart_upload(
     block_id: String,
     image_id: String,
     upload_id: String,
+    extension: String,
 ) -> Result<Response<Body>, Error> {
     let s3_key = format!(
-        "projects/{}/blocks/{}/{}.jpg",
+        "projects/{}/blocks/{}/{}.{}",
         project_id,
         block_id,
-        image_id
+        image_id,
+        extension
     );
     
     s3_client

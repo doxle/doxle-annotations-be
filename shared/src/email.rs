@@ -199,9 +199,12 @@ This invitation expires in 7 days. If you didn't expect this, you can safely ign
         .simple(message)
         .build();
 
+    let from_email = std::env::var("SES_FROM_EMAIL")
+        .unwrap_or_else(|_| "noreply@doxle.ai".to_string());
+    
     ses_client
         .send_email()
-        .from_email_address("noreply@doxle.ai")
+        .from_email_address(from_email)
         .destination(destination)
         .content(email_content)
         .send()

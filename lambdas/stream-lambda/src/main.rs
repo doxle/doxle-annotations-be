@@ -56,8 +56,14 @@ async fn process_record(
     tracing::info!("Processing {} event", event_name);
 
     // Determine entity type from PK
-    // AttributeValue from serde_dynamo is already a serde_json::Value-like type
-    let pk = record.change.new_image.get("PK")
+    // For REMOVE events, new_image is empty; use old_image instead
+    let image = if record.change.new_image.is_empty() {
+        &record.change.old_image
+    } else {
+        &record.change.new_image
+    };
+    
+    let pk = image.get("PK")
         .and_then(|attr| {
             // Convert to string - the AttributeValue should be a String variant
             serde_json::to_value(attr).ok()
@@ -77,7 +83,7 @@ async fn process_record(
         "INSERT" => {
             if pk_str.starts_with("PROJECT#") {
                 create_project_broadcast(record, "project_created")?
-            } else if pk_str.starts_with("TASK#") || pk_str.starts_with("BLOCK#") {
+            } else if pk_str.starts_with("BLOCK#") {
                 create_entity_broadcast(record, "block_created")?
             } else if pk_str.starts_with("IMAGE#") {
                 create_entity_broadcast(record, "image_created")?
@@ -92,7 +98,7 @@ async fn process_record(
         "MODIFY" => {
             if pk_str.starts_with("PROJECT#") {
                 create_project_broadcast(record, "project_updated")?
-            } else if pk_str.starts_with("TASK#") || pk_str.starts_with("BLOCK#") {
+            } else if pk_str.starts_with("BLOCK#") {
                 create_entity_broadcast(record, "block_updated")?
             } else if pk_str.starts_with("IMAGE#") {
                 create_entity_broadcast(record, "image_updated")?
@@ -109,7 +115,7 @@ async fn process_record(
             let entity_id = extract_id_from_pk(pk_str);
             let message_type = if pk_str.starts_with("PROJECT#") {
                 "project_deleted"
-            } else if pk_str.starts_with("TASK#") || pk_str.starts_with("BLOCK#") {
+            } else if pk_str.starts_with("BLOCK#") {
                 "block_deleted"
             } else if pk_str.starts_with("IMAGE#") {
                 "image_deleted"

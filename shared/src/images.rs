@@ -171,6 +171,21 @@ pub async fn update_image(
     let req: UpdateImageRequest = serde_json::from_slice(body)?;
     let pk = format!("IMAGE#{}", image_id);
     
+    // First get the image to find its block_id
+    let get_result = client
+        .get_item()
+        .table_name(table_name)
+        .key("PK", aws_sdk_dynamodb::types::AttributeValue::S(pk.clone()))
+        .key("SK", aws_sdk_dynamodb::types::AttributeValue::S(pk.clone()))
+        .send()
+        .await?;
+    
+    let block_id = get_result
+        .item()
+        .and_then(|item| item.get("block_id"))
+        .and_then(|v| v.as_s().ok())
+        .ok_or("Image not found or missing block_id")?;
+    
     let mut update_expr = vec![];
     let mut expr_names = std::collections::HashMap::new();
     let mut expr_values = std::collections::HashMap::new();
@@ -188,22 +203,46 @@ pub async fn update_image(
     }
     
     if !update_expr.is_empty() {
+        let update_expression = format!("SET {}", update_expr.join(", "));
+        
+        // Update IMAGE#→IMAGE# row
         let mut builder = client
             .update_item()
             .table_name(table_name)
             .key("PK", aws_sdk_dynamodb::types::AttributeValue::S(pk.clone()))
-            .key("SK", aws_sdk_dynamodb::types::AttributeValue::S(pk))
-            .update_expression(format!("SET {}", update_expr.join(", ")));
+            .key("SK", aws_sdk_dynamodb::types::AttributeValue::S(pk.clone()))
+            .update_expression(&update_expression);
         
-        for (k, v) in expr_names {
+        for (k, v) in expr_names.iter() {
             builder = builder.expression_attribute_names(k, v);
         }
         
-        for (k, v) in expr_values {
-            builder = builder.expression_attribute_values(k, v);
+        for (k, v) in expr_values.iter() {
+            builder = builder.expression_attribute_values(k, v.clone());
         }
         
         builder.send().await?;
+        
+        // Also update BLOCK#→IMAGE# row
+        let block_pk = aws_sdk_dynamodb::types::AttributeValue::S(block_id.to_string());
+        let image_sk = aws_sdk_dynamodb::types::AttributeValue::S(format!("IMAGE#{}", image_id));
+        
+        let mut builder2 = client
+            .update_item()
+            .table_name(table_name)
+            .key("PK", block_pk)
+            .key("SK", image_sk)
+            .update_expression(&update_expression);
+        
+        for (k, v) in expr_names {
+            builder2 = builder2.expression_attribute_names(k, v);
+        }
+        
+        for (k, v) in expr_values {
+            builder2 = builder2.expression_attribute_values(k, v);
+        }
+        
+        builder2.send().await?;
     }
     
     get_image(client, table_name, image_id).await
@@ -217,6 +256,22 @@ pub async fn delete_image(
 ) -> Result<Response<Body>, Error> {
     let pk = format!("IMAGE#{}", image_id);
     
+    // First get the image to find its block_id
+    let get_result = client
+        .get_item()
+        .table_name(table_name)
+        .key("PK", aws_sdk_dynamodb::types::AttributeValue::S(pk.clone()))
+        .key("SK", aws_sdk_dynamodb::types::AttributeValue::S(pk.clone()))
+        .send()
+        .await?;
+    
+    let block_id = get_result
+        .item()
+        .and_then(|item| item.get("block_id"))
+        .and_then(|v| v.as_s().ok())
+        .map(|s| s.to_string());
+    
+    // Delete IMAGE#→IMAGE# row
     client
         .delete_item()
         .table_name(table_name)
@@ -224,6 +279,17 @@ pub async fn delete_image(
         .key("SK", aws_sdk_dynamodb::types::AttributeValue::S(pk))
         .send()
         .await?;
+    
+    // Also delete BLOCK#→IMAGE# row if we found the block_id
+    if let Some(block_id) = block_id {
+        client
+            .delete_item()
+            .table_name(table_name)
+            .key("PK", aws_sdk_dynamodb::types::AttributeValue::S(block_id))
+            .key("SK", aws_sdk_dynamodb::types::AttributeValue::S(format!("IMAGE#{}", image_id)))
+            .send()
+            .await?;
+    }
     
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)

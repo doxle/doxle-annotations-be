@@ -9,8 +9,16 @@ Parameters:
   
   TrustedKeyGroupPublicKey:
     Type: String
-    Description: Public key for CloudFront signed cookies (PEM format without headers)
+    Description: Public key for CloudFront signed cookies (PEM format, including BEGIN/END lines)
     NoEcho: true
+  
+  AliasDomainName:
+    Type: String
+    Description: Custom domain name to serve (e.g., annotate.doxle.com)
+  
+  AcmCertificateArn:
+    Type: String
+    Description: ACM certificate ARN in us-east-1 that covers the AliasDomainName
 
 Resources:
   # CloudFront Origin Access Control
@@ -74,6 +82,8 @@ Resources:
       DistributionConfig:
         Enabled: true
         Comment: !Sub ${AWS::StackName} - Image delivery with signed cookies, HTTP/3, Origin Shield
+        Aliases:
+          - !Ref AliasDomainName
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
@@ -102,7 +112,9 @@ Resources:
         PriceClass: PriceClass_100  # Use only North America and Europe edge locations
         HttpVersion: http2and3  # HTTP/2 and HTTP/3 (QUIC)
         ViewerCertificate:
-          CloudFrontDefaultCertificate: true
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
 
   # Custom Response Headers Policy
   CustomResponseHeadersPolicy:

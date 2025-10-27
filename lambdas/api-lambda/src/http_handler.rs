@@ -12,6 +12,7 @@ struct AbortUploadRequest {
     block_id: String,
     image_id: String,
     upload_id: String,
+    extension: String,
 }
 
 /// Main Lambda handler - routes requests to auth or user endpoints
@@ -24,7 +25,7 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
             .status(StatusCode::OK)
             .header("Access-Control-Allow-Origin", "*")
             .header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-            .header("Access-Control-Allow-Headers", "Content-Type,Authorization")
+            .header("Access-Control-Allow-Headers", "Content-Type,Authorization,X-User-Id")
             .body(Body::Empty)
             .map_err(Box::new)?);
     }
@@ -97,7 +98,18 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
                 .map_err(Box::new)?);
         }
 
-        // Extract user ID from JWT
+        // Validate Authorization header is present
+        let auth_header = event.headers().get("Authorization");
+        if auth_header.is_none() {
+            return Ok(Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header("Content-Type", "application/json")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(serde_json::json!({"error": "Missing Authorization header"}).to_string().into())
+                .map_err(Box::new)?);
+        }
+
+        // Extract user ID from JWT (API Gateway should have validated the token)
         let user_id = event
             .headers()
             .get("X-User-Id")
@@ -110,8 +122,10 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
                     .and_then(|auth| auth.jwt.as_ref())
                     .and_then(|jwt| jwt.claims.get("sub"))
                     .map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| "anonymous".to_string());
+            });
+        
+        // If we still don't have a user_id, the JWT validation failed
+        let user_id = user_id.ok_or("Failed to extract user ID from JWT")?;
 
         // Issue CloudFront signed cookies (valid for 12 hours)
         let origin_header = event.headers().get("Origin").and_then(|v| v.to_str().ok());
@@ -333,6 +347,7 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
                     request.block_id,
                     request.image_id,
                     request.upload_id,
+                    request.extension,
                 ).await
             }
             _ => not_found()
@@ -408,14 +423,29 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
 fn parse_bucket_and_key(url: &str) -> Option<(String, String)> {
     let no_scheme = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
     let (host, path) = no_scheme.split_once('/')?;
-    let bucket = host.split(".s3").next()?.to_string();
-    let key = path.to_string();
+    
+    // Handle both formats:
+    // 1. bucket.s3.amazonaws.com/key
+    // 2. s3.region.amazonaws.com/bucket/key
+    let (bucket, key) = if host.starts_with("s3.") {
+        // Format: s3.region.amazonaws.com/bucket/key
+        let parts: Vec<&str> = path.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            (parts[0].to_string(), parts[1].to_string())
+        } else {
+            return None;
+        }
+    } else {
+        // Format: bucket.s3.amazonaws.com/key
+        (host.split(".s3").next()?.to_string(), path.to_string())
+    };
+    
     Some((bucket, key))
 }
 
 async fn list_block_images_signed(
     dynamo: &DynamoClient,
-    s3: &S3Client,
+    _s3: &S3Client,
     table_name: &str,
     block_id: &str,
 ) -> Result<Response<Body>, Error> {
