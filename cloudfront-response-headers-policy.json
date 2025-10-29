@@ -1,0 +1,35 @@
+{
+  "Comment": "Immutable cache headers for images with CORS",
+  "Name": "doxle-annotations-cf-annotate-headers",
+  "CustomHeadersConfig": {
+    "Quantity": 2,
+    "Items": [
+      {
+        "Header": "Cache-Control",
+        "Value": "public, max-age=31536000, immutable",
+        "Override": true
+      },
+      {
+        "Header": "Accept-Ranges",
+        "Value": "bytes",
+        "Override": false
+      }
+    ]
+  },
+  "CorsConfig": {
+    "AccessControlAllowOrigins": {
+      "Quantity": 1,
+      "Items": ["https://annotate.doxle.ai"]
+    },
+    "AccessControlAllowHeaders": {
+      "Quantity": 4,
+      "Items": ["Origin", "Accept", "Content-Type", "Authorization"]
+    },
+    "AccessControlAllowMethods": {
+      "Quantity": 2,
+      "Items": ["GET", "HEAD"]
+    },
+    "AccessControlAllowCredentials": true,
+    "OriginOverride": false
+  }
+}

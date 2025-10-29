@@ -2,7 +2,7 @@ use lambda_http::{Body, Error, Response, http::StatusCode};
 use rsa::{RsaPrivateKey, pkcs1v15::SigningKey, signature::SignatureEncoding, signature::Signer};
 use rsa::pkcs8::DecodePrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
-use sha2::Sha256;
+use sha1::Sha1;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -72,9 +72,19 @@ pub fn generate_signed_cookies(
     // Sign the policy
     let signature = sign_policy(&policy_json, &private_key_pem)?;
     
-    // Base64-encode policy and signature (URL-safe, no padding)
-    let policy_b64 = URL_SAFE_NO_PAD.encode(policy_json.as_bytes());
-    let signature_b64 = URL_SAFE_NO_PAD.encode(&signature);
+    // Base64-encode policy and signature using CloudFront cookie-safe mapping
+    // AWS requires STANDARD base64, then replace: '+' -> '-', '=' -> '_', '/' -> '~'
+    let policy_b64_std = base64::engine::general_purpose::STANDARD.encode(policy_json.as_bytes());
+    let policy_b64 = policy_b64_std
+        .replace('+', "-")
+        .replace('=', "_")
+        .replace('/', "~");
+
+    let signature_b64_std = base64::engine::general_purpose::STANDARD.encode(&signature);
+    let signature_b64 = signature_b64_std
+        .replace('+', "-")
+        .replace('=', "_")
+        .replace('/', "~");
     
     // Return cookies as key-value pairs
     Ok(vec![
@@ -84,7 +94,7 @@ pub fn generate_signed_cookies(
     ])
 }
 
-/// Sign the CloudFront policy with RSA-SHA256
+/// Sign the CloudFront policy with RSA-SHA1 (required by AWS CloudFront)
 fn sign_policy(
     policy_json: &str,
     private_key_pem: &str,
@@ -94,7 +104,7 @@ fn sign_policy(
         Ok(k) => k,
         Err(_) => RsaPrivateKey::from_pkcs1_pem(private_key_pem)?,
     };
-    let signing_key = SigningKey::<Sha256>::new(private_key);
+    let signing_key = SigningKey::<Sha1>::new(private_key);
     
     // Sign the policy
     let signature = signing_key.sign(policy_json.as_bytes());

@@ -245,20 +245,21 @@ pub async fn signup(
             tracing::info!("Signup successful for user: {}", signup_request.email);
             
             // Auto-confirm user since they used a valid invite (email already verified)
-            let user_pool_id = std::env::var("COGNITO_USER_POOL_ID")
-                .unwrap_or_else(|_| "ap-southeast-2_Rmd3TFvE9".to_string());
-            
-            if let Err(e) = cognito_client
-                .admin_confirm_sign_up()
-                .user_pool_id(&user_pool_id)
-                .username(&signup_request.email)
-                .send()
-                .await
-            {
-                tracing::error!("Failed to auto-confirm user: {:?}", e);
-                // Don't fail signup, user can still verify via email
+            if let Ok(user_pool_id) = std::env::var("COGNITO_USER_POOL_ID") {
+                if let Err(e) = cognito_client
+                    .admin_confirm_sign_up()
+                    .user_pool_id(&user_pool_id)
+                    .username(&signup_request.email)
+                    .send()
+                    .await
+                {
+                    tracing::error!("Failed to auto-confirm user: {:?}", e);
+                    // Don't fail signup, user can still verify via email
+                } else {
+                    tracing::info!("User auto-confirmed: {}", signup_request.email);
+                }
             } else {
-                tracing::info!("User auto-confirmed: {}", signup_request.email);
+                tracing::warn!("COGNITO_USER_POOL_ID not set; skipping auto-confirm");
             }
             
             // Mark invite as used

@@ -1,5 +1,60 @@
+async fn delete_project_s3_prefix(s3_client: &S3Client, project_id: &str) -> Result<(), Error> {
+    const BUCKET_NAME: &str = "doxle-annotations";
+    let prefix = format!("projects/{}/", project_id);
+
+    let mut continuation: Option<String> = None;
+    loop {
+        let mut req = s3_client
+            .list_objects_v2()
+            .bucket(BUCKET_NAME)
+            .prefix(&prefix);
+        if let Some(token) = continuation.as_ref() {
+            req = req.continuation_token(token);
+        }
+        let resp = req.send().await.map_err(|e| {
+            tracing::error!("S3 list_objects_v2 failed for prefix {}: {}", prefix, e);
+            format!("S3 list failed: {}", e)
+        })?;
+
+        let contents = resp.contents();
+        let objects: Vec<_> = contents
+            .iter()
+            .filter_map(|o| o.key())
+            .filter_map(|k| aws_sdk_s3::types::ObjectIdentifier::builder().key(k).build().ok())
+            .collect();
+        if objects.is_empty() {
+            if resp.is_truncated().unwrap_or(false) {
+                continuation = resp.next_continuation_token().map(|s| s.to_string());
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        let delete_payload = aws_sdk_s3::types::Delete::builder()
+            .set_objects(Some(objects))
+            .build()
+            .map_err(|e| format!("Failed to build S3 delete payload: {:?}", e))?;
+
+        let _ = s3_client
+            .delete_objects()
+            .bucket(BUCKET_NAME)
+            .delete(delete_payload)
+            .send()
+            .await;
+
+        if resp.is_truncated().unwrap_or(false) {
+            continuation = resp.next_continuation_token().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
 use lambda_http::{Body, Error, Response, http::StatusCode};
 use aws_sdk_dynamodb::Client as DynamoClient;
+use aws_sdk_s3::Client as S3Client;
 use crate::types::{Project, CreateProjectRequest, UpdateProjectRequest};
 
 /// Create a new project
@@ -268,6 +323,7 @@ pub async fn update_project(
 /// Delete a project and all associated resources (blocks, images, annotations, classes)
 pub async fn delete_project(
     client: &DynamoClient,
+    s3_client: &S3Client,
     table_name: &str,
     project_id: &str,
     user_id: &str,
@@ -465,6 +521,9 @@ pub async fn delete_project(
     println!("[DELETE] Cascade delete complete: {} records (batch: {:?}, total: {:?})", 
              all_delete_keys.len(), batch_time, total_time);
     
+    // Step 6: Delete S3 objects under project prefix: projects/{project_id}/
+    delete_project_s3_prefix(s3_client, project_id).await.ok();
+
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
         .header("Access-Control-Allow-Origin", "*")

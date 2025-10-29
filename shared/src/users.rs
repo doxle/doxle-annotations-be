@@ -68,8 +68,11 @@ pub async fn get_user(
         .await?;
 
     if let Some(item) = result.item() {
-        let name = item.get("name").and_then(|v| v.as_s().ok()).map(|s| s.to_string()).unwrap_or_default();
+        let mut name = item.get("name").and_then(|v| v.as_s().ok()).map(|s| s.to_string()).unwrap_or_default();
         let email = item.get("email").and_then(|v| v.as_s().ok()).map(|s| s.to_string()).unwrap_or_default();
+        if name.trim().is_empty() {
+            name = email.split('@').next().unwrap_or("User").to_string();
+        }
         let company = item.get("company").and_then(|v| v.as_s().ok()).map(|s| s.to_string());
         let role = item.get("role").and_then(|v| v.as_s().ok()).map(|s| s.to_string()).unwrap_or_default();
         let created_at = item.get("created_at").and_then(|v| v.as_s().ok()).map(|s| s.to_string()).unwrap_or_default();
@@ -89,17 +92,24 @@ pub async fn get_user(
 
         let user = User {
             user_id: user_id.to_string(),
-            name,
-            email,
-            company,
-            role,
-            created_at,
-            last_login: Some(now),
+            name: name.clone(),
+            email: email.clone(),
+            company: company.clone(),
+            role: role.clone(),
+            created_at: created_at.clone(),
+            last_login: Some(now.clone()),
         };
+        
+        tracing::info!("User object: user_id={}, name='{}', email={}, company={:?}, role={}, created_at={}, last_login={:?}", 
+            user.user_id, user.name, user.email, user.company, user.role, user.created_at, user.last_login);
+        
+        let json_body = serde_json::to_string(&user)?;
+        tracing::info!("Serialized JSON: {}", json_body);
 
         let resp = Response::builder()
             .status(200)
             .header("content-type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(serde_json::to_string(&user)?.into())
             .map_err(Box::new)?;
         Ok(resp)
@@ -107,6 +117,7 @@ pub async fn get_user(
         let resp = Response::builder()
             .status(404)
             .header("content-type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(serde_json::json!({"error": "User not found"}).to_string().into())
             .map_err(Box::new)?;
         Ok(resp)

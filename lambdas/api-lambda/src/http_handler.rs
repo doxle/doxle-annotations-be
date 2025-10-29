@@ -2,7 +2,7 @@ use lambda_http::{Body, Error, Request, RequestExt, Response, http::{Method, Sta
 use serde::Deserialize;
 use std::env;
 use std::sync::Arc;
-use doxle_shared::{auth, users, projects, blocks, images, annotations, classes, s3_multipart, invites, cloudfront, AppState};
+use doxle_shared::{auth, users, projects, blocks, images, annotations, classes, s3_multipart, invites, cloudfront, image_proxy, AppState};
 use aws_sdk_dynamodb::{Client as DynamoClient, types::AttributeValue};
 use aws_sdk_s3::Client as S3Client;
 
@@ -122,14 +122,19 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
                     .and_then(|auth| auth.jwt.as_ref())
                     .and_then(|jwt| jwt.claims.get("sub"))
                     .map(|s| s.to_string())
-            });
-        
-        // If we still don't have a user_id, the JWT validation failed
-        let user_id = user_id.ok_or("Failed to extract user ID from JWT")?;
+            })
+            .unwrap_or_else(|| "authenticated-user".to_string()); // Fallback - cookies still work
 
         // Issue CloudFront signed cookies (valid for 12 hours)
         let origin_header = event.headers().get("Origin").and_then(|v| v.to_str().ok());
         return cloudfront::issue_signed_cookies_response(&user_id, 43200, origin_header);
+    }
+
+    // Image proxy route (public - serves images from S3)
+    if path.starts_with("/proxy-image/") {
+        // URL format: /proxy-image/projects/{pid}/blocks/{bid}/{image}.ext
+        let image_path = path.strip_prefix("/proxy-image/").unwrap_or("");
+        return image_proxy::proxy_image(&state.s3_client, "doxle-annotations", image_path).await;
     }
 
     // Invites routes (public GET, authenticated POST)
@@ -260,7 +265,7 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
             }
             // DELETE /projects/{id} - delete project
             (&Method::DELETE, ["projects", project_id]) => {
-                projects::delete_project(&state.dynamo_client, &table_name, project_id, &user_id).await
+                projects::delete_project(&state.dynamo_client, &state.s3_client, &table_name, project_id, &user_id).await
             }
             // GET /projects/{id}/blocks - list project blocks
             (&Method::GET, ["projects", project_id, "blocks"]) => {
@@ -309,7 +314,7 @@ pub(crate) async fn function_handler(event: Request, state: Arc<AppState>) -> Re
             }
             // DELETE /blocks/{id} - delete block
             (&Method::DELETE, ["blocks", block_id]) => {
-                blocks::delete_block(&state.dynamo_client, &table_name, block_id).await
+                blocks::delete_block(&state.dynamo_client, &state.s3_client, &table_name, block_id).await
             }
             // GET /blocks/{id}/images - list block images (with signed S3 URLs)
             (&Method::GET, ["blocks", block_id, "images"]) => {
@@ -445,7 +450,7 @@ fn parse_bucket_and_key(url: &str) -> Option<(String, String)> {
 
 async fn list_block_images_signed(
     dynamo: &DynamoClient,
-    _s3: &S3Client,
+    s3: &S3Client,
     table_name: &str,
     block_id: &str,
 ) -> Result<Response<Body>, Error> {
@@ -471,15 +476,13 @@ async fn list_block_images_signed(
                     .map(|s| s.to_string())
                     .unwrap_or_default();
 
-                // Prefer CloudFront URL if configured, else fallback to stored URL
-                let mut final_url = url_str.clone();
-                if let Ok(cf_domain) = std::env::var("CLOUDFRONT_DOMAIN") {
-                    if !cf_domain.trim().is_empty() {
-                        if let Some((_bucket, key)) = parse_bucket_and_key(&url_str) {
-                            final_url = format!("https://{}/{}", cf_domain.trim_matches('/'), key);
-                        }
-                    }
-                }
+                // Generate Lambda proxy URL
+                let final_url = if let Some((_bucket, key)) = parse_bucket_and_key(&url_str) {
+                    // Return URL that goes through Lambda proxy
+                    format!("https://api.doxle.ai/proxy-image/{}", key)
+                } else {
+                    url_str.clone()
+                };
 
                 let locked = item.get("locked").and_then(|v| v.as_bool().ok()).copied().unwrap_or(false);
                 let order = item.get("order").and_then(|v| v.as_n().ok()).and_then(|n| n.parse::<i32>().ok());

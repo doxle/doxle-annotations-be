@@ -1,5 +1,60 @@
+async fn delete_s3_prefix(s3_client: &S3Client, project_id: &str, block_id: &str) -> Result<(), Error> {
+    const BUCKET_NAME: &str = "doxle-annotations";
+    let prefix = format!("projects/{}/blocks/{}/", project_id, block_id);
+
+    let mut continuation: Option<String> = None;
+    loop {
+        let mut req = s3_client
+            .list_objects_v2()
+            .bucket(BUCKET_NAME)
+            .prefix(&prefix);
+        if let Some(token) = continuation.as_ref() {
+            req = req.continuation_token(token);
+        }
+        let resp = req.send().await.map_err(|e| {
+            tracing::error!("S3 list_objects_v2 failed for prefix {}: {}", prefix, e);
+            format!("S3 list failed: {}", e)
+        })?;
+
+        let contents = resp.contents();
+        let objects: Vec<_> = contents
+            .iter()
+            .filter_map(|o| o.key())
+            .filter_map(|k| aws_sdk_s3::types::ObjectIdentifier::builder().key(k).build().ok())
+            .collect();
+        if objects.is_empty() {
+            if resp.is_truncated().unwrap_or(false) {
+                continuation = resp.next_continuation_token().map(|s| s.to_string());
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        let delete_payload = aws_sdk_s3::types::Delete::builder()
+            .set_objects(Some(objects))
+            .build()
+            .map_err(|e| format!("Failed to build S3 delete payload: {:?}", e))?;
+
+        let _ = s3_client
+            .delete_objects()
+            .bucket(BUCKET_NAME)
+            .delete(delete_payload)
+            .send()
+            .await;
+
+        if resp.is_truncated().unwrap_or(false) {
+            continuation = resp.next_continuation_token().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
 use lambda_http::{Body, Error, Response, http::StatusCode};
 use aws_sdk_dynamodb::Client as DynamoClient;
+use aws_sdk_s3::Client as S3Client;
 use crate::types::{Block, CreateBlockRequest, UpdateBlockRequest};
 
 /// Create a new block in a project
@@ -78,9 +133,12 @@ pub async fn get_block(
         .await?;
     
     if let Some(item) = result.item() {
+        let project_id_raw = item.get("project_id").and_then(|v| v.as_s().ok()).map(|s| s.to_string()).unwrap_or_default();
+        let project_id = project_id_raw.strip_prefix("PROJECT#").unwrap_or(&project_id_raw).to_string();
+        
         let block = Block {
             block_id: block_id.to_string(),
-            project_id: item.get("project_id").and_then(|v| v.as_s().ok()).map(|s| s.to_string()).unwrap_or_default(),
+            project_id,
             name: item.get("name").and_then(|v| v.as_s().ok()).map(|s| s.to_string()).unwrap_or_default(),
             state: item.get("state").and_then(|v| v.as_s().ok()).map(|s| s.to_string()).unwrap_or_default(),
             locked: item.get("locked").and_then(|v| v.as_bool().ok()).copied().unwrap_or(false),
@@ -211,6 +269,7 @@ pub async fn update_block(
 /// Delete a block and associated records (images, annotations, links)
 pub async fn delete_block(
     client: &DynamoClient,
+    s3_client: &S3Client,
     table_name: &str,
     block_id: &str,
 ) -> Result<Response<Body>, Error> {
@@ -233,6 +292,9 @@ pub async fn delete_block(
         .and_then(|v| v.as_s().ok())
         .map(|s| s.to_string())
         .unwrap_or_default();
+
+    // Derive project_id (strip prefix) for S3 deletion
+    let project_id_for_s3 = project_pk.strip_prefix("PROJECT#").map(|s| s.to_string());
 
     // Collect all keys to delete
     let mut delete_keys: Vec<HashMap<String, aws_sdk_dynamodb::types::AttributeValue>> = Vec::new();
@@ -341,6 +403,11 @@ pub async fn delete_block(
                 break;
             }
         }
+    }
+
+    // 6) Delete S3 objects under this block prefix: projects/{project_id}/blocks/{block_id}/
+    if let Some(project_id) = project_id_for_s3 {
+        delete_s3_prefix(s3_client, &project_id, block_id).await.ok();
     }
 
     Ok(Response::builder()

@@ -12,6 +12,7 @@ pub mod s3_multipart;
 pub mod invites;
 pub mod email;
 pub mod cloudfront;
+pub mod image_proxy;
 
 use aws_sdk_apigatewaymanagement::Client as ApiGatewayManagementClient;
 use aws_sdk_cognitoidentityprovider::Client as CognitoClient;

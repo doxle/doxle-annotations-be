@@ -142,11 +142,11 @@ async fn handle_message(
             let body_bytes = serde_json::to_vec(&message.data)?;
             projects::update_project(&state.dynamo_client, table_name, project_id, &body_bytes).await
         }
-        "delete_project" => {
+            "delete_project" => {
             let project_id = message.data.get("project_id")
                 .and_then(|v| v.as_str())
                 .ok_or("Missing project_id")?;
-            projects::delete_project(&state.dynamo_client, table_name, project_id, &user_id).await
+            projects::delete_project(&state.dynamo_client, &state.s3_client, table_name, project_id, &user_id).await
         }
         
         // Block actions
@@ -164,11 +164,11 @@ async fn handle_message(
             let body_bytes = serde_json::to_vec(&message.data)?;
             blocks::update_block(&state.dynamo_client, table_name, block_id, &body_bytes).await
         }
-        "delete_block" => {
+            "delete_block" => {
             let block_id = message.data.get("block_id")
                 .and_then(|v| v.as_str())
                 .ok_or("Missing block_id")?;
-            blocks::delete_block(&state.dynamo_client, table_name, block_id).await
+            blocks::delete_block(&state.dynamo_client, &state.s3_client, table_name, block_id).await
         }
         
         // Image actions
