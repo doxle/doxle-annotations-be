@@ -124,6 +124,25 @@ pub struct UpdateImageRequest {
     pub order: Option<i32>,
 }
 
+// ========== IMAGE METADATA (Pyramid) ==========
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ImageMetadata {
+    pub original_width: u32,
+    pub original_height: u32,
+    pub file_size: usize,
+    pub format: String,
+    pub levels: Vec<ImageLevel>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ImageLevel {
+    pub width: u32,
+    pub height: u32,
+    pub path: String,  // e.g. "4955w.png" or "2477w.jpg"
+    pub size: usize,
+    pub purpose: String,  // "full" or "preview"
+}
+
 // ========== ANNOTATION ==========
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Point {

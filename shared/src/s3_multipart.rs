@@ -1,6 +1,8 @@
 use lambda_http::{Body, Error, Response, http::StatusCode};
 use aws_sdk_s3::Client as S3Client;
 use serde::{Deserialize, Serialize};
+use crate::types::{ImageMetadata, ImageLevel};
+use crate::image_processing;
 
 const BUCKET_NAME: &str = "doxle-annotations";
 const MULTIPART_THRESHOLD: usize = 5 * 1024 * 1024; // 5MB
@@ -204,7 +206,24 @@ pub async fn complete_multipart_upload(
         .await
         .map_err(|e| format!("Failed to complete multipart upload: {}", e))?;
     
-    // Generate public URL
+    // Process image asynchronously (generate pyramid if needed)
+    tracing::info!("🔄 Starting post-upload processing for image: {}", request.image_id);
+    match process_uploaded_image(
+        s3_client,
+        &request.project_id,
+        &request.block_id,
+        &request.image_id,
+        &request.extension,
+    ).await {
+        Ok(metadata) => {
+            tracing::info!("✅ Image processing complete: {} levels", metadata.levels.len());
+        }
+        Err(e) => {
+            tracing::error!("⚠️ Image processing failed (continuing anyway): {}", e);
+        }
+    }
+    
+    // Generate public URL (use first level path)
     let url = format!(
         "https://{}.s3.amazonaws.com/{}",
         BUCKET_NAME,
@@ -255,4 +274,157 @@ pub async fn abort_multipart_upload(
         .header("Access-Control-Allow-Origin", "*")
         .body(Body::Empty)
         .map_err(Box::new)?)
+}
+
+/// Process uploaded image: generate half-width if needed and create metadata
+pub async fn process_uploaded_image(
+    s3_client: &S3Client,
+    project_id: &str,
+    block_id: &str,
+    image_id: &str,
+    extension: &str,
+) -> Result<ImageMetadata, String> {
+    let original_key = format!(
+        "projects/{}/blocks/{}/{}.{}",
+        project_id, block_id, image_id, extension
+    );
+    
+    // Download original image from S3
+    tracing::info!("📥 Downloading image from S3: {}", original_key);
+    let result = s3_client
+        .get_object()
+        .bucket(BUCKET_NAME)
+        .key(&original_key)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download image: {}", e))?;
+    
+    let image_bytes = result
+        .body
+        .collect()
+        .await
+        .map_err(|e| format!("Failed to read image bytes: {}", e))?
+        .into_bytes()
+        .to_vec();
+    
+    let file_size = image_bytes.len();
+    
+    // Get dimensions
+    let (width, height) = image_processing::get_dimensions(&image_bytes)?;
+    
+    tracing::info!("📐 Image dimensions: {}x{}, size: {} bytes", width, height, file_size);
+    
+    // Check if we need half-width version
+    let needs_pyramid = image_processing::needs_half_width(file_size, width, height);
+    
+    let mut levels = vec![];
+    
+    if needs_pyramid {
+        tracing::info!("🔄 Generating half-width version...");
+        
+        // Generate half-width
+        let (half_width, half_height, half_bytes) = image_processing::generate_half_width(&image_bytes)?;
+        let half_size = half_bytes.len();
+        
+        // Upload structure: projects/{pid}/blocks/{bid}/{img_id}/
+        let base_path = format!("projects/{}/blocks/{}/{}", project_id, block_id, image_id);
+        
+        // Upload full resolution (move original to folder)
+        let full_key = format!("{}/{}w.{}", base_path, width, extension);
+        tracing::info!("📤 Uploading full resolution to: {}", full_key);
+        s3_client
+            .put_object()
+            .bucket(BUCKET_NAME)
+            .key(&full_key)
+            .body(image_bytes.into())
+            .send()
+            .await
+            .map_err(|e| format!("Failed to upload full resolution: {}", e))?;
+        
+        // Delete old flat file
+        s3_client
+            .delete_object()
+            .bucket(BUCKET_NAME)
+            .key(&original_key)
+            .send()
+            .await
+            .ok(); // Ignore errors
+        
+        // Upload half-width (JPEG)
+        let half_key = format!("{}/{}w.jpg", base_path, half_width);
+        tracing::info!("📤 Uploading half-width to: {}", half_key);
+        s3_client
+            .put_object()
+            .bucket(BUCKET_NAME)
+            .key(&half_key)
+            .body(half_bytes.into())
+            .content_type("image/jpeg")
+            .send()
+            .await
+            .map_err(|e| format!("Failed to upload half-width: {}", e))?;
+        
+        // Build metadata
+        levels.push(ImageLevel {
+            width,
+            height,
+            path: format!("{}w.{}", width, extension),
+            size: file_size,
+            purpose: "full".to_string(),
+        });
+        
+        levels.push(ImageLevel {
+            width: half_width,
+            height: half_height,
+            path: format!("{}w.jpg", half_width),
+            size: half_size,
+            purpose: "preview".to_string(),
+        });
+        
+        // Upload metadata.json
+        let metadata = ImageMetadata {
+            original_width: width,
+            original_height: height,
+            file_size,
+            format: extension.to_string(),
+            levels: levels.clone(),
+        };
+        
+        let metadata_json = serde_json::to_string(&metadata)
+            .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
+        
+        let metadata_key = format!("{}/metadata.json", base_path);
+        tracing::info!("📤 Uploading metadata to: {}", metadata_key);
+        s3_client
+            .put_object()
+            .bucket(BUCKET_NAME)
+            .key(&metadata_key)
+            .body(metadata_json.into_bytes().into())
+            .content_type("application/json")
+            .send()
+            .await
+            .map_err(|e| format!("Failed to upload metadata: {}", e))?;
+        
+        tracing::info!("✅ Image processing complete: pyramid created");
+        Ok(metadata)
+        
+    } else {
+        tracing::info!("✅ Image is small enough, no pyramid needed");
+        
+        // Single level metadata
+        levels.push(ImageLevel {
+            width,
+            height,
+            path: format!("{}.{}", image_id, extension),
+            size: file_size,
+            purpose: "full".to_string(),
+        });
+        
+        Ok(ImageMetadata {
+            original_width: width,
+            original_height: height,
+            file_size,
+            format: extension.to_string(),
+            levels,
+        })
+    }
 }

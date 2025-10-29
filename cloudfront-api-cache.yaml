@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFront distribution for API Gateway with aggressive image caching'
+
+Parameters:
+  ApiGatewayDomain:
+    Type: String
+    Description: 'Your API Gateway domain (e.g., abc123.execute-api.ap-southeast-2.amazonaws.com)'
+  
+  CertificateArn:
+    Type: String
+    Description: 'ACM certificate ARN for your custom domain (must be in us-east-1)'
+    Default: ''
+  
+  CustomDomain:
+    Type: String
+    Description: 'Custom domain for CloudFront (e.g., api.doxle.ai)'
+    Default: ''
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomain, '']]
+
+Resources:
+  # Cache policy for image proxying - cache everything for 1 year
+  ImageCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: doxle-image-proxy-cache
+        Comment: Aggressive caching for image proxy endpoints
+        DefaultTTL: 31536000  # 1 year in seconds
+        MaxTTL: 31536000      # 1 year
+        MinTTL: 86400         # 1 day minimum
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          QueryStringsConfig:
+            QueryStringBehavior: none  # Don't include query strings in cache key
+          HeadersConfig:
+            HeaderBehavior: none  # Don't include headers in cache key (public caching)
+          CookiesConfig:
+            CookieBehavior: none
+
+  # Note: Using AWS managed CachingDisabled policy for API endpoints
+  # Managed Policy ID: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+
+  # Origin request policy - forward headers to API Gateway
+  OriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: doxle-forward-headers
+        Comment: Forward necessary headers to API Gateway
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - Origin
+            - Access-Control-Request-Method
+            - Access-Control-Request-Headers
+            - CloudFront-Viewer-Country
+        QueryStringsConfig:
+          QueryStringBehavior: all
+        CookiesConfig:
+          CookieBehavior: none
+
+  # Response headers policy - CORS
+  ResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: doxle-api-cors-headers
+        Comment: CORS headers for API responses
+        CorsConfig:
+          AccessControlAllowOrigins:
+            Items:
+              - 'https://annotate.doxle.ai'
+              - 'http://localhost:8080'
+          AccessControlAllowHeaders:
+            Items:
+              - Authorization
+              - Content-Type
+              - X-User-Id
+              - Accept
+          AccessControlAllowMethods:
+            Items:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+              - HEAD
+          AccessControlAllowCredentials: true
+          OriginOverride: false
+        CustomHeadersConfig:
+          Items:
+            - Header: Cache-Control
+              Value: public, max-age=31536000, immutable
+              Override: false
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: 'CloudFront cache for Doxle API Gateway (image optimization)'
+        HttpVersion: http2and3
+        PriceClass: PriceClass_All
+        
+        Aliases: !If 
+          - HasCustomDomain
+          - [!Ref CustomDomain]
+          - !Ref AWS::NoValue
+        
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        
+        Origins:
+          - Id: ApiGatewayOrigin
+            DomainName: !Ref ApiGatewayDomain
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        
+        DefaultCacheBehavior:
+          TargetOriginId: ApiGatewayOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - POST
+            - PATCH
+            - DELETE
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad  # AWS managed CachingDisabled policy
+          OriginRequestPolicyId: !Ref OriginRequestPolicy
+          ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+          Compress: true
+        
+        # Special behavior for image proxy - aggressive caching
+        CacheBehaviors:
+          - PathPattern: '/proxy-image/*'
+            TargetOriginId: ApiGatewayOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            CachePolicyId: !Ref ImageCachePolicy
+            OriginRequestPolicyId: !Ref OriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref ResponseHeadersPolicy
+            Compress: true
+            SmoothStreaming: false
+
+Outputs:
+  CloudFrontDomain:
+    Description: 'CloudFront distribution domain name'
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  
+  CloudFrontDistributionId:
+    Description: 'CloudFront distribution ID'
+    Value: !Ref CloudFrontDistribution
+  
+  ImageProxyCachePolicyId:
+    Description: 'Cache policy ID for image proxy'
+    Value: !Ref ImageCachePolicy

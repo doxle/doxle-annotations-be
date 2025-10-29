@@ -24,5 +24,6 @@ rsa = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+image = { workspace = true }
 
 tokio = { workspace = true }
