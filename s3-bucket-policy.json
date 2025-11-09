@@ -1,0 +1,32 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCloudFrontOAC",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "cloudfront.amazonaws.com"
+      },
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::doxle-annotations/*",
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceArn": "arn:aws:cloudfront::766582709626:distribution/E2ISJJ9IE221LF"
+        }
+      }
+    },
+    {
+      "Sid": "AllowLambdaPresignedURLs",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::766582709626:role/cargo-lambda-role-6e448c75-b5df-4669-a305-8e046e1e6e47"
+      },
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::doxle-annotations/*"
+    }
+  ]
+}

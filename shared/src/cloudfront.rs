@@ -3,7 +3,7 @@ use rsa::{RsaPrivateKey, pkcs1v15::SigningKey, signature::SignatureEncoding, sig
 use rsa::pkcs8::DecodePrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use sha1::Sha1;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::Engine;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CLOUDFRONT_DOMAIN: &str = "CLOUDFRONT_DOMAIN"; // Set via env var

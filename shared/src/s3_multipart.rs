@@ -181,30 +181,34 @@ pub async fn complete_multipart_upload(
         request.extension
     );
     
-    // Build completed parts
-    let mut completed_parts = Vec::new();
-    for part in &request.parts {
-        let completed_part = aws_sdk_s3::types::CompletedPart::builder()
-            .part_number(part.part_number)
-            .e_tag(&part.etag)
+    // Only complete multipart if there are parts (multipart upload)
+    // For single-part uploads, parts will be empty and upload_id will be empty
+    if !request.parts.is_empty() && !request.upload_id.is_empty() {
+        // Build completed parts
+        let mut completed_parts = Vec::new();
+        for part in &request.parts {
+            let completed_part = aws_sdk_s3::types::CompletedPart::builder()
+                .part_number(part.part_number)
+                .e_tag(&part.etag)
+                .build();
+            completed_parts.push(completed_part);
+        }
+        
+        let completed_upload = aws_sdk_s3::types::CompletedMultipartUpload::builder()
+            .set_parts(Some(completed_parts))
             .build();
-        completed_parts.push(completed_part);
+        
+        // Complete the multipart upload
+        s3_client
+            .complete_multipart_upload()
+            .bucket(BUCKET_NAME)
+            .key(&s3_key)
+            .upload_id(&request.upload_id)
+            .multipart_upload(completed_upload)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to complete multipart upload: {}", e))?;
     }
-    
-    let completed_upload = aws_sdk_s3::types::CompletedMultipartUpload::builder()
-        .set_parts(Some(completed_parts))
-        .build();
-    
-    // Complete the multipart upload
-    s3_client
-        .complete_multipart_upload()
-        .bucket(BUCKET_NAME)
-        .key(&s3_key)
-        .upload_id(&request.upload_id)
-        .multipart_upload(completed_upload)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to complete multipart upload: {}", e))?;
     
     // Process image asynchronously (generate pyramid if needed)
     tracing::info!("🔄 Starting post-upload processing for image: {}", request.image_id);

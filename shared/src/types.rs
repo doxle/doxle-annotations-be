@@ -29,20 +29,26 @@ pub struct UpdateUserRequest {
 
 // ========== PROJECT ==========
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Label {
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Project {
     pub project_id: String,
     pub name: String,
-    #[serde(rename = "type")]
     pub project_type: String, // building | annotation
     pub locked: bool,
+    pub labels: Vec<Label>,
     pub created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
-    #[serde(rename = "type")]
     pub project_type: String,
+    pub labels: Vec<Label>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,9 +144,9 @@ pub struct ImageMetadata {
 pub struct ImageLevel {
     pub width: u32,
     pub height: u32,
-    pub path: String,  // e.g. "4955w.png" or "2477w.jpg"
+    pub path: String, // e.g. "4955w.png" or "2477w.jpg"
     pub size: usize,
-    pub purpose: String,  // "full" or "preview"
+    pub purpose: String, // "full" or "preview"
 }
 
 // ========== ANNOTATION ==========

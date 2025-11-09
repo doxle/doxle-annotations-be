@@ -3,8 +3,8 @@ use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::primitives::ByteStream;
 
 const BUCKET_NAME: &str = "doxle-annotations";
-const MULTIPART_THRESHOLD: usize = 5 * 1024 * 1024; // 5MB
-const CHUNK_SIZE: usize = 5 * 1024 * 1024; // 5MB chunks
+const _MULTIPART_THRESHOLD: usize = 5 * 1024 * 1024; // 5MB
+const _CHUNK_SIZE: usize = 5 * 1024 * 1024; // 5MB chunks
 
 #[derive(serde::Deserialize)]
 pub struct UploadImageRequest {

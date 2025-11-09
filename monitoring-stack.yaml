@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Monitoring and alerts for critical policy/config changes'
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Description: Email address to receive alerts
+    Default: sel@doxle.com
+
+Resources:
+  # SNS Topic for alerts
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: doxle-critical-changes-alerts
+      DisplayName: Doxle Critical Changes Alerts
+      Subscription:
+        - Endpoint: !Ref AlertEmail
+          Protocol: email
+
+  # EventBridge Rule - S3 Bucket Policy Changes
+  S3PolicyChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: doxle-s3-policy-change-alert
+      Description: Alert when S3 bucket policy is modified or deleted
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventName:
+            - PutBucketPolicy
+            - DeleteBucketPolicy
+          requestParameters:
+            bucketName:
+              - doxle-annotations
+      State: ENABLED
+      Targets:
+        - Arn: !Ref AlertTopic
+          Id: S3PolicyChangeTarget
+          InputTransformer:
+            InputPathsMap:
+              eventName: $.detail.eventName
+              userName: $.detail.userIdentity.principalId
+              sourceIP: $.detail.sourceIPAddress
+              time: $.time
+            InputTemplate: |
+              "🚨 CRITICAL: S3 Bucket Policy Changed!"
+              "Bucket: doxle-annotations"
+              "Action: <eventName>"
+              "User: <userName>"
+              "Source IP: <sourceIP>"
+              "Time: <time>"
+              ""
+              "⚠️ Verify that upload permissions (s3:PutObject) are still present!"
+
+  # EventBridge Rule - Lambda Configuration Changes
+  LambdaConfigChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: doxle-lambda-config-change-alert
+      Description: Alert when Lambda configuration is modified
+      EventPattern:
+        source:
+          - aws.lambda
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventName:
+            - UpdateFunctionConfiguration20150331v2
+          requestParameters:
+            functionName:
+              - doxle-annotations-api
+      State: ENABLED
+      Targets:
+        - Arn: !Ref AlertTopic
+          Id: LambdaConfigChangeTarget
+          InputTransformer:
+            InputPathsMap:
+              functionName: $.detail.requestParameters.functionName
+              userName: $.detail.userIdentity.principalId
+              sourceIP: $.detail.sourceIPAddress
+              time: $.time
+            InputTemplate: |
+              "🚨 CRITICAL: Lambda Configuration Changed!"
+              "Function: <functionName>"
+              "User: <userName>"
+              "Source IP: <sourceIP>"
+              "Time: <time>"
+              ""
+              "⚠️ Verify that environment variables (COGNITO_*, TABLE_NAME, CLOUDFRONT_*) are still set!"
+
+  # Allow EventBridge to publish to SNS
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlertTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: SNS:Publish
+            Resource: !Ref AlertTopic
+
+  # CloudWatch Log Metric Filter - S3 403 Errors
+  S3Upload403Filter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterPattern: '[time, request_id, event_type = "ERROR", module, line, msg = "*403*"]'
+      LogGroupName: /aws/lambda/doxle-annotations-api
+      MetricTransformations:
+        - MetricName: S3Upload403Errors
+          MetricNamespace: Doxle/Uploads
+          MetricValue: '1'
+          DefaultValue: 0
+
+  # CloudWatch Alarm - S3 403 Errors
+  S3Upload403Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: doxle-s3-upload-403-errors
+      AlarmDescription: Alert when S3 uploads fail with 403 (permission denied)
+      MetricName: S3Upload403Errors
+      Namespace: Doxle/Uploads
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+Outputs:
+  AlertTopicArn:
+    Description: SNS Topic ARN for alerts
+    Value: !Ref AlertTopic
+    Export:
+      Name: doxle-alert-topic-arn

@@ -2,8 +2,8 @@ use image::{ImageFormat, imageops::FilterType};
 use std::io::Cursor;
 
 /// Thresholds for generating half-width previews
-const MIN_FILE_SIZE_BYTES: usize = 1_000_000; // 1MB
-const MIN_DIMENSION_PX: u32 = 2048;
+const MIN_FILE_SIZE_BYTES: usize = 3_000_000; // 3MB
+const MIN_DIMENSION_PX: u32 = 3000;
 
 /// Determine if image needs a half-width version
 pub fn needs_half_width(file_size: usize, width: u32, height: u32) -> bool {
@@ -48,15 +48,15 @@ mod tests {
     #[test]
     fn test_needs_half_width() {
         // Small file, small dimensions → No
-        assert_eq!(needs_half_width(500_000, 1024, 768), false);
+        assert_eq!(needs_half_width(2_000_000, 2048, 1536), false);
         
         // Large file, small dimensions → Yes
-        assert_eq!(needs_half_width(2_000_000, 1024, 768), true);
+        assert_eq!(needs_half_width(4_000_000, 2048, 1536), true);
         
         // Small file, large dimensions → Yes
-        assert_eq!(needs_half_width(500_000, 4000, 3000), true);
+        assert_eq!(needs_half_width(2_000_000, 4000, 3000), true);
         
         // Large file, large dimensions → Yes
-        assert_eq!(needs_half_width(2_000_000, 4000, 3000), true);
+        assert_eq!(needs_half_width(4_000_000, 4000, 3000), true);
     }
 }

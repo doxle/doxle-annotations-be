@@ -1,5 +1,7 @@
 # Doxle Core
 
+ALIAS=prod ./scripts/deploy_lambda.sh
+
 Shared libraries for the Doxle platform.
 
 ## Crates
